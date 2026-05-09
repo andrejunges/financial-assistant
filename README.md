@@ -125,12 +125,44 @@ REFERENCE_CACHE_TTL_SECONDS=300
 
 ---
 
+## Raycast quick entry
+
+This repo also includes a local Raycast extension for fast expense capture with autocomplete backed by recent Organizze transactions.
+
+Warm the local suggestion cache:
+```bash
+python3 finance_cli.py refresh-templates --days 180
+```
+
+Try suggestions from the CLI:
+```bash
+python3 finance_cli.py suggest "Bancarela 57"
+```
+
+Run the Raycast extension locally:
+```bash
+cd raycast
+npm install
+npm run dev
+```
+
+Raycast commands:
+
+- `Quick Expense`: type a short entry like `Bancarela 57`, choose a suggested description, confirm, and create the expense.
+- `Refresh Expense Suggestions`: refreshes local autocomplete templates from recent Organizze transactions.
+
+The Raycast extension calls `finance_cli.py`, which reads `.env` directly. It uses the same `DEFAULT_ACCOUNT_NAME` default as the Telegram bot.
+
+---
+
 ## Project structure
 
 ```
 organizze_bot/
 ├── bot.py                 # Telegram bot + LLM loop
+├── finance_cli.py         # Local CLI for Raycast quick entry
 ├── organizze_client.py    # Organizze API wrapper
+├── raycast/               # Raycast extension
 ├── storage.py             # SQLite history + pending actions
 ├── DECISIONS.md           # Product and architecture decisions
 ├── requirements.txt

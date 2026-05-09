@@ -62,6 +62,29 @@ def init_db() -> None:
             ON pending_actions (user_id, status)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_templates (
+                description TEXT PRIMARY KEY,
+                category_id INTEGER,
+                account_id INTEGER,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_amount_cents INTEGER,
+                last_used_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS merchant_aliases (
+                alias TEXT PRIMARY KEY,
+                canonical_description TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def _now() -> str:
@@ -188,3 +211,117 @@ def get_account_name(account_id: int) -> Optional[str]:
         return None
 
     return row["name"]
+
+
+def get_account_id_by_name(name: str) -> Optional[int]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM accounts
+            WHERE lower(name) = lower(?)
+            """,
+            (name,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return int(row["id"])
+
+
+def upsert_transaction_templates(transactions: list[dict]) -> None:
+    with _connect() as conn:
+        for tx in transactions:
+            description = (tx.get("description") or "").strip()
+            if not description:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO transaction_templates (
+                    description,
+                    category_id,
+                    account_id,
+                    use_count,
+                    last_amount_cents,
+                    last_used_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(description) DO UPDATE SET
+                    category_id = COALESCE(excluded.category_id, transaction_templates.category_id),
+                    account_id = COALESCE(excluded.account_id, transaction_templates.account_id),
+                    use_count = transaction_templates.use_count + 1,
+                    last_amount_cents = excluded.last_amount_cents,
+                    last_used_at = excluded.last_used_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    description,
+                    tx.get("category_id"),
+                    tx.get("account_id"),
+                    tx.get("amount_cents"),
+                    tx.get("date") or _now(),
+                    _now(),
+                ),
+            )
+
+
+def list_transaction_templates(limit: int = 200) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                description,
+                category_id,
+                account_id,
+                use_count,
+                last_amount_cents,
+                last_used_at
+            FROM transaction_templates
+            ORDER BY use_count DESC, last_used_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def upsert_alias(alias: str, canonical_description: str) -> None:
+    alias = alias.strip().lower()
+    canonical_description = canonical_description.strip()
+    if not alias or not canonical_description:
+        return
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO merchant_aliases (
+                alias,
+                canonical_description,
+                use_count,
+                updated_at
+            )
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(alias) DO UPDATE SET
+                canonical_description = excluded.canonical_description,
+                use_count = merchant_aliases.use_count + 1,
+                updated_at = excluded.updated_at
+            """,
+            (alias, canonical_description, _now()),
+        )
+
+
+def list_aliases() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT alias, canonical_description, use_count
+            FROM merchant_aliases
+            ORDER BY use_count DESC, updated_at DESC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "financial-assistant",
+  "title": "Financial Assistant",
+  "description": "Quick Organizze expense entry with local autocomplete.",
+  "icon": "icon.png",
+  "author": "andrejunges",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "quick-expense",
+      "title": "Quick Expense",
+      "description": "Create a quick Organizze expense from a short text entry.",
+      "mode": "view"
+    },
+    {
+      "name": "refresh-templates",
+      "title": "Refresh Expense Suggestions",
+      "description": "Refresh local autocomplete templates from recent Organizze transactions.",
+      "mode": "no-view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.89.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "^20.11.30",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.3"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix"
+  }
+}
