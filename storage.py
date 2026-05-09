@@ -41,6 +41,17 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_messages_user_created
             ON messages (user_id, created_at)
             """
@@ -135,3 +146,45 @@ def resolve_pending_action(action_id: int, status: str) -> None:
             """,
             (status, _now(), action_id),
         )
+
+
+def upsert_accounts(accounts: list[dict]) -> None:
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO accounts (id, name, type, archived, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                type = excluded.type,
+                archived = excluded.archived,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    int(account["id"]),
+                    account["name"],
+                    account.get("type") or "",
+                    1 if account.get("archived") else 0,
+                    _now(),
+                )
+                for account in accounts
+            ],
+        )
+
+
+def get_account_name(account_id: int) -> Optional[str]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT name
+            FROM accounts
+            WHERE id = ?
+            """,
+            (account_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return row["name"]

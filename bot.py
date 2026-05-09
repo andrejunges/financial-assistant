@@ -145,9 +145,7 @@ def _format_brl(amount_cents: int) -> str:
 
 
 def _format_pending_transaction(params: dict) -> str:
-    account_name = params.get("account_name")
-    if not account_name and params.get("account_id"):
-        account_name = _get_account_name(int(params["account_id"]))
+    account_name = _get_account_name(int(params["account_id"])) if params.get("account_id") else ""
 
     lines = [
         "Revise antes de eu lançar:",
@@ -165,6 +163,12 @@ def _format_pending_transaction(params: dict) -> str:
     return "\n".join(lines)
 
 
+def _fetch_and_cache_accounts() -> list[dict]:
+    accounts = org.get_accounts()
+    storage.upsert_accounts(accounts)
+    return accounts
+
+
 def _resolve_account_id(value) -> Optional[int]:
     if isinstance(value, int):
         return value
@@ -173,7 +177,7 @@ def _resolve_account_id(value) -> Optional[int]:
         if value.isdigit():
             return int(value)
 
-        accounts = org.get_accounts()
+        accounts = _fetch_and_cache_accounts()
         normalized = value.strip().lower()
         for account in accounts:
             if account["name"].strip().lower() == normalized:
@@ -183,7 +187,11 @@ def _resolve_account_id(value) -> Optional[int]:
 
 
 def _get_account_name(account_id: int) -> str:
-    for account in org.get_accounts():
+    cached_name = storage.get_account_name(account_id)
+    if cached_name:
+        return cached_name
+
+    for account in _fetch_and_cache_accounts():
         if int(account["id"]) == account_id:
             return account["name"]
     return ""
@@ -262,7 +270,7 @@ def handle_pending_confirmation(user_id: int, user_message: str) -> Optional[str
                 f"- {result['description']}\n"
                 f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
                 f"- Data: {result['date']}\n"
-                f"- Conta: {result.get('account') or 'não informada'}"
+                f"- Conta: {_get_account_name(int(pending['params']['account_id'])) or 'não informada'}"
             )
         except Exception as e:
             logger.error(f"Pending action error: {e}")
@@ -282,7 +290,9 @@ def call_tool(tool: str, params: dict) -> str:
     """Execute an Organizze tool and return a string result."""
     try:
         if tool == "get_accounts":
-            return json.dumps(org.get_accounts())
+            accounts = org.get_accounts()
+            storage.upsert_accounts(accounts)
+            return json.dumps(accounts)
         elif tool == "get_transactions":
             return json.dumps(org.get_transactions(**params))
         elif tool == "create_transaction":
