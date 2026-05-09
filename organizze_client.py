@@ -37,6 +37,11 @@ def _post(path: str, data: dict):
     r.raise_for_status()
     return r.json()
 
+def _delete(path: str, data: dict = None):
+    r = _session().delete(f"{BASE_URL}{path}", json=data or {})
+    r.raise_for_status()
+    return r.json()
+
 def _cached(key: str, fetcher):
     cached = _cache.get(key)
     now = time.time()
@@ -131,6 +136,29 @@ def create_transaction(
         "date": result["date"],
         "account": result.get("account_name", ""),
         "category": result.get("category_name", ""),
+    }
+
+def delete_transaction(
+    transaction_id: int,
+    update_future: bool = False,
+    update_all: bool = False,
+) -> dict:
+    """Delete a transaction by id."""
+    payload = {}
+    if update_future:
+        payload["update_future"] = True
+    if update_all:
+        payload["update_all"] = True
+
+    result = _delete(f"/transactions/{transaction_id}", payload)
+    return {
+        "id": result["id"],
+        "description": result["description"],
+        "amount_brl": result["amount_cents"] / 100,
+        "amount_cents": result["amount_cents"],
+        "date": result["date"],
+        "account_id": result.get("account_id"),
+        "category_id": result.get("category_id"),
     }
 
 # ── Categories ───────────────────────────────────────────────────────────────

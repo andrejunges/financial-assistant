@@ -13,11 +13,12 @@ Say things like *"gastei 45 reais no mercado hoje"* and it drafts the transactio
 | "gastos dos últimos 7 dias" | Lists recent transactions |
 | "gastei R$45 no mercado hoje, conta Nubank" | Drafts an expense and asks for confirmation |
 | "recebi 3000 de salário" | Drafts an income and asks for confirmation |
+| "remover lançamento duplicado" | Finds/drafts a deletion and asks for confirmation |
 | "quais categorias tenho?" | Lists all categories |
 | "como estão meus orçamentos?" | Shows budget vs actual this month |
 | receipt photo | Extracts receipt details and asks before saving |
 
-Transactions are never written immediately from an LLM response. The app stores a pending action and only calls Organizze after an explicit confirmation, either through the Telegram buttons or a typed `sim`.
+Transactions are never created or deleted immediately from an LLM response. The app stores a pending action and only calls Organizze after an explicit confirmation, either through the Telegram buttons or a typed `sim`.
 
 ---
 

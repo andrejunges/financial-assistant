@@ -56,12 +56,14 @@ Available tools:
 - get_accounts: List bank accounts. Organizze does not expose current bank-account balances through this endpoint.
 - get_transactions: List recent transactions (optional: days=30, account_id)
 - create_transaction: Add a transaction (required: description, amount_cents, date YYYY-MM-DD, account_id; optional: category_id, notes)
+- delete_transaction: Delete an existing transaction (required: transaction_id; optional: update_future, update_all)
 - get_categories: List all categories
 - get_budgets: List current month budgets and usage
 
 Rules:
-- Never tell the user a transaction was created unless the tool result confirms it.
-- The app enforces confirmation before create_transaction. If the user asks to create a transaction, call create_transaction with the draft params; the app will save it as a pending action and ask for confirmation before writing to Organizze.
+- Never tell the user a transaction was created/deleted unless the tool result confirms it.
+- The app enforces confirmation before create_transaction and delete_transaction. If the user asks to create or delete a transaction, call the matching tool with the draft params; the app will save it as a pending action and ask for confirmation before writing to Organizze.
+- Do not simulate deletion by creating an opposite transaction. Use delete_transaction with a transaction_id.
 - Dates default to today if not specified
 - Always respond in the same language the user writes in
 - Be concise and friendly
@@ -186,6 +188,30 @@ def _format_pending_transaction(params: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_pending_delete(params: dict) -> str:
+    amount_cents = params.get("amount_cents")
+    amount_line = f"- Valor: {_format_brl(int(amount_cents))}" if amount_cents is not None else None
+    lines = [
+        "Revise antes de eu remover:",
+        f"- ID: {params.get('transaction_id')}",
+    ]
+    if params.get("description"):
+        lines.append(f"- Descrição: {params['description']}")
+    if amount_line:
+        lines.append(amount_line)
+    if params.get("date"):
+        lines.append(f"- Data: {params['date']}")
+    if params.get("account_id"):
+        lines.append(f"- Conta: {_get_account_name(int(params['account_id'])) or params['account_id']}")
+    if params.get("update_future"):
+        lines.append("- Inclui esta e próximas ocorrências")
+    if params.get("update_all"):
+        lines.append("- Inclui todas as ocorrências")
+    lines.append("")
+    lines.append("Toque em Confirmar para remover ou Cancelar para manter.")
+    return "\n".join(lines)
+
+
 def _fetch_and_cache_accounts() -> list[dict]:
     accounts = org.get_accounts()
     storage.upsert_accounts(accounts)
@@ -229,9 +255,27 @@ def _transaction_write_params(params: dict) -> dict:
     return {key: value for key, value in params.items() if key in allowed}
 
 
+def _delete_write_params(params: dict) -> dict:
+    allowed = {"transaction_id", "update_future", "update_all"}
+    return {key: value for key, value in params.items() if key in allowed}
+
+
+def _looks_like_delete_as_create(params: dict) -> bool:
+    text = " ".join(
+        str(params.get(key) or "")
+        for key in ("description", "notes")
+    )
+    normalized = _normalize_reply(text)
+    delete_words = ("remover", "remocao", "remover duplicada", "duplicada", "duplicado")
+    return any(word in normalized for word in delete_words)
+
+
 def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[str]]:
     normalized = dict(params)
     errors = []
+
+    if _looks_like_delete_as_create(normalized):
+        return None, ["para remover uma duplicada, preciso do ID do lançamento e vou usar a ação de remoção, não criar um lançamento inverso"]
 
     description = str(normalized.get("description") or "").strip()
     if not description:
@@ -273,6 +317,33 @@ def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[st
     return normalized, []
 
 
+def _normalize_delete_params(params: dict) -> tuple[Optional[dict], list[str]]:
+    normalized = dict(params)
+    errors = []
+
+    try:
+        normalized["transaction_id"] = int(normalized["transaction_id"])
+    except (KeyError, TypeError, ValueError):
+        errors.append("id da movimentação")
+
+    normalized["update_future"] = bool(normalized.get("update_future", False))
+    normalized["update_all"] = bool(normalized.get("update_all", False))
+
+    for optional_int in ("amount_cents", "account_id", "category_id"):
+        if normalized.get(optional_int) in ("", None):
+            normalized.pop(optional_int, None)
+        else:
+            try:
+                normalized[optional_int] = int(normalized[optional_int])
+            except (TypeError, ValueError):
+                normalized.pop(optional_int, None)
+
+    if errors:
+        return None, errors
+
+    return normalized, []
+
+
 def confirm_pending_action(user_id: int) -> str:
     pending = storage.get_pending_action(user_id)
     if not pending:
@@ -280,28 +351,46 @@ def confirm_pending_action(user_id: int) -> str:
         storage.append_message(user_id, "assistant", message)
         return message
 
-    if pending["action_type"] != "create_transaction":
+    if pending["action_type"] == "create_transaction":
+        try:
+            result = org.create_transaction(**_transaction_write_params(pending["params"]))
+            storage.resolve_pending_action(pending["id"], "confirmed")
+            message = (
+                "Lançamento criado:\n"
+                f"- {result['description']}\n"
+                f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
+                f"- Data: {result['date']}\n"
+                f"- Conta: {_get_account_name(int(pending['params']['account_id'])) or 'não informada'}"
+            )
+        except Exception as e:
+            logger.error(f"Pending create action error: {e}")
+            message = f"Não consegui criar o lançamento: {e}"
+
+        storage.append_message(user_id, "assistant", message)
+        return message
+
+    if pending["action_type"] == "delete_transaction":
+        try:
+            result = org.delete_transaction(**_delete_write_params(pending["params"]))
+            storage.resolve_pending_action(pending["id"], "confirmed")
+            message = (
+                "Lançamento removido:\n"
+                f"- {result['description']}\n"
+                f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
+                f"- Data: {result['date']}"
+            )
+        except Exception as e:
+            logger.error(f"Pending delete action error: {e}")
+            message = f"Não consegui remover o lançamento: {e}"
+
+        storage.append_message(user_id, "assistant", message)
+        return message
+
+    else:
         storage.resolve_pending_action(pending["id"], "cancelled")
         message = "Não reconheci essa ação pendente, então descartei por segurança."
         storage.append_message(user_id, "assistant", message)
         return message
-
-    try:
-        result = org.create_transaction(**_transaction_write_params(pending["params"]))
-        storage.resolve_pending_action(pending["id"], "confirmed")
-        message = (
-            "Lançamento criado:\n"
-            f"- {result['description']}\n"
-            f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
-            f"- Data: {result['date']}\n"
-            f"- Conta: {_get_account_name(int(pending['params']['account_id'])) or 'não informada'}"
-        )
-    except Exception as e:
-        logger.error(f"Pending action error: {e}")
-        message = f"Não consegui criar o lançamento: {e}"
-
-    storage.append_message(user_id, "assistant", message)
-    return message
 
 
 def cancel_pending_action(user_id: int) -> str:
@@ -347,6 +436,8 @@ def call_tool(tool: str, params: dict) -> str:
             return json.dumps(org.get_transactions(**params))
         elif tool == "create_transaction":
             return json.dumps({"error": "create_transaction must be confirmed through a pending action"})
+        elif tool == "delete_transaction":
+            return json.dumps({"error": "delete_transaction must be confirmed through a pending action"})
         elif tool == "get_categories":
             return json.dumps(org.get_categories())
         elif tool == "get_budgets":
@@ -437,6 +528,22 @@ def ask_llm(user_id: int, user_message: str) -> str:
                 pending_id = storage.create_pending_action(user_id, tool, normalized_params)
                 reply = _format_pending_transaction(normalized_params)
                 logger.info(f"Pending action {pending_id} created for user {user_id}")
+                storage.append_message(user_id, "assistant", reply)
+                return reply
+
+            if tool == "delete_transaction":
+                normalized_params, errors = _normalize_delete_params(params)
+                if normalized_params is None:
+                    reply = (
+                        "Preciso identificar exatamente qual lançamento remover: "
+                        f"{', '.join(errors)}. Pode me mandar esse detalhe?"
+                    )
+                    storage.append_message(user_id, "assistant", reply)
+                    return reply
+
+                pending_id = storage.create_pending_action(user_id, tool, normalized_params)
+                reply = _format_pending_delete(normalized_params)
+                logger.info(f"Pending delete action {pending_id} created for user {user_id}")
                 storage.append_message(user_id, "assistant", reply)
                 return reply
 
