@@ -114,7 +114,7 @@ def _normalize_reply(text: str) -> str:
 
 
 def _telegram_html(text: str) -> str:
-    """Escape text for Telegram HTML and convert common Markdown emphasis."""
+    """Escape text for Telegram HTML and convert Markdown bold only."""
     allowed_tags = {
         "<b>": "__TG_B_OPEN__",
         "</b>": "__TG_B_CLOSE__",
@@ -127,7 +127,6 @@ def _telegram_html(text: str) -> str:
 
     formatted = html.escape(formatted, quote=False)
     formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", formatted, flags=re.DOTALL)
-    formatted = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", formatted, flags=re.DOTALL)
 
     for tag, token in allowed_tags.items():
         formatted = formatted.replace(token, tag)
