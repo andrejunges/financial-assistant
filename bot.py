@@ -2,11 +2,14 @@ import os
 import json
 import logging
 import base64
+import html
+import re
 import unicodedata
 from io import BytesIO
 from datetime import date, datetime
 from typing import Optional
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 import organizze_client as org
@@ -62,6 +65,7 @@ Rules:
 - Always respond in the same language the user writes in
 - Be concise and friendly
 - When listing transactions, format nicely with clear income/expense labels
+- For emphasis, use Telegram HTML tags like <b>bold</b> and <i>italic</i>. Do not use Markdown emphasis like **bold**.
 - Negative amounts = expense, positive = income in Organizze
 - When a receipt is extracted, present a clear summary before confirming
 
@@ -107,6 +111,32 @@ def _normalize_reply(text: str) -> str:
         if not unicodedata.combining(char)
     )
     return " ".join(without_accents.strip().split())
+
+
+def _telegram_html(text: str) -> str:
+    """Escape text for Telegram HTML and convert common Markdown emphasis."""
+    allowed_tags = {
+        "<b>": "__TG_B_OPEN__",
+        "</b>": "__TG_B_CLOSE__",
+        "<i>": "__TG_I_OPEN__",
+        "</i>": "__TG_I_CLOSE__",
+    }
+    formatted = text
+    for tag, token in allowed_tags.items():
+        formatted = formatted.replace(tag, token)
+
+    formatted = html.escape(formatted, quote=False)
+    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", formatted, flags=re.DOTALL)
+    formatted = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", formatted, flags=re.DOTALL)
+
+    for tag, token in allowed_tags.items():
+        formatted = formatted.replace(token, tag)
+
+    return formatted
+
+
+async def send_message(update: Update, text: str) -> None:
+    await update.message.reply_text(_telegram_html(text), parse_mode=ParseMode.HTML)
 
 
 def _format_brl(amount_cents: int) -> str:
@@ -373,7 +403,7 @@ def is_authorized(user_id: int) -> bool:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
-        await update.message.reply_text("⛔ Acesso não autorizado.")
+        await send_message(update, "⛔ Acesso não autorizado.")
         return
 
     await update.message.chat.send_action("typing")
@@ -384,15 +414,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {e}")
         reply = f"❌ Erro interno: {e}"
 
-    await update.message.reply_text(reply)
+    await send_message(update, reply)
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Acesso não autorizado.")
+        await send_message(update, "Acesso não autorizado.")
         return
 
-    await update.message.reply_text(
+    await send_message(update, 
         "Oi. Eu ajudo a consultar o Organizze e preparar lançamentos por aqui.\n\n"
         "Você pode perguntar saldo, gastos recentes, categorias e orçamentos. "
         "Quando eu preparar um lançamento, sempre vou pedir confirmação antes de salvar."
@@ -401,10 +431,10 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update.effective_user.id):
-        await update.message.reply_text("Acesso não autorizado.")
+        await send_message(update, "Acesso não autorizado.")
         return
 
-    await update.message.reply_text(
+    await send_message(update, 
         "Exemplos:\n"
         "- qual meu saldo?\n"
         "- gastos dos últimos 7 dias\n"
@@ -418,7 +448,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle receipt photos — extract data via vision then confirm with user."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
-        await update.message.reply_text("⛔ Acesso não autorizado.")
+        await send_message(update, "⛔ Acesso não autorizado.")
         return
 
     await update.message.chat.send_action("typing")
@@ -462,7 +492,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Photo error: {e}")
         reply = f"❌ Erro ao processar a imagem: {e}"
 
-    await update.message.reply_text(reply)
+    await send_message(update, reply)
 
 def main():
     validate_required_env()
