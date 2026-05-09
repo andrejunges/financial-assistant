@@ -67,7 +67,12 @@ python3 bot.py
 ### Option A: Railway (easiest)
 1. Push this folder to a GitHub repo
 2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-3. Add your env vars in the **Variables** tab
+3. Add your env vars in the **Variables** tab:
+   - `TELEGRAM_BOT_TOKEN`
+   - `ORGANIZZE_EMAIL`
+   - `ORGANIZZE_API_TOKEN`
+   - `OPENAI_API_KEY`
+   - `ALLOWED_USER_IDS`
 4. Railway auto-detects the `Procfile` and runs `python bot.py`
 5. Set the service type to **Worker** (no web server needed)
 

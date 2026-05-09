@@ -17,9 +17,33 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+REQUIRED_ENV_VARS = (
+    "TELEGRAM_BOT_TOKEN",
+    "ORGANIZZE_EMAIL",
+    "ORGANIZZE_API_TOKEN",
+    "OPENAI_API_KEY",
+)
+
 CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o")
+openai_client = None
+
+
+def validate_required_env() -> None:
+    missing = [name for name in REQUIRED_ENV_VARS if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variables: "
+            f"{', '.join(missing)}. Configure them in Railway Variables."
+        )
+
+
+def get_openai_client() -> OpenAI:
+    global openai_client
+    if openai_client is None:
+        validate_required_env()
+        openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    return openai_client
 
 SYSTEM_PROMPT = """You are a personal finance assistant connected to the user's Organizze account.
 You help them manage finances by calling tools when needed.
@@ -247,7 +271,7 @@ def extract_receipt(image_bytes: bytes) -> dict:
     """Use GPT-4o vision to extract structured data from a receipt image."""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    response = openai_client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model=VISION_MODEL,
         max_tokens=500,
         messages=[
@@ -284,7 +308,7 @@ def ask_llm(user_id: int, user_message: str) -> str:
     trimmed = storage.get_recent_messages(user_id, limit=20)
 
     for _ in range(5):
-        response = openai_client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model=CHAT_MODEL,
             messages=[
                 {
@@ -441,6 +465,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 def main():
+    validate_required_env()
     storage.init_db()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     app = ApplicationBuilder().token(token).build()
