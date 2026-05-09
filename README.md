@@ -12,7 +12,7 @@ Say things like *"gastei 45 reais no mercado hoje"* and it drafts the transactio
 | "quais contas tenho?" | Lists bank accounts |
 | "gastos dos últimos 7 dias" | Lists recent transactions |
 | "gastei R$45 no mercado hoje, conta Nubank" | Drafts an expense and asks for confirmation |
-| "recebi 3000 de salário" | Drafts an income and asks for confirmation |
+| "gastei R$45 no mercado #trabalho" | Drafts an expense with tags and asks for confirmation |
 | "remover lançamento duplicado" | Finds/drafts a deletion and asks for confirmation |
 | "quais categorias tenho?" | Lists all categories |
 | "como estão meus orçamentos?" | Shows budget vs actual this month |

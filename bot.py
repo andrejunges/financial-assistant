@@ -55,7 +55,11 @@ You help them manage finances by calling tools when needed.
 Available tools:
 - get_accounts: List bank accounts. Organizze does not expose current bank-account balances through this endpoint.
 - get_transactions: List recent transactions (optional: days=30, account_id)
-- create_transaction: Add a transaction (required: description, amount_cents, date YYYY-MM-DD, account_id; optional: category_id, notes)
+- get_credit_cards: List credit cards
+- get_credit_card_invoices: List invoices for a credit card (credit_card_id or credit_card_name)
+- get_credit_card_invoice: Show one credit card invoice with transactions (credit_card_id or credit_card_name, invoice_id)
+- get_credit_card_monthly_expense: Show credit-card spend for a month (credit_card_id or credit_card_name; optional year, month, include_transactions)
+- create_transaction: Add an expense transaction only (required: description, amount_cents as a negative integer, date YYYY-MM-DD, account_id; optional: category_id, notes, tags as an array of strings or objects with name)
 - delete_transaction: Delete an existing transaction (required: transaction_id; optional: update_future, update_all)
 - get_categories: List all categories
 - get_budgets: List current month budgets and usage
@@ -70,6 +74,10 @@ Rules:
 - When listing transactions, format nicely with clear income/expense labels
 - For emphasis, use Telegram HTML tags like <b>bold</b> and <i>italic</i>. Do not use Markdown emphasis like **bold**.
 - If the user omits the account for a new transaction, use the default account unless the user corrects it later.
+- If the user asks about credit-card, "cc", card expenses, invoices, or a card by name, use the credit-card tools instead of get_transactions with account_id.
+- For "monthly expense" on a credit card, use get_credit_card_monthly_expense. If the user does not specify a month, use the current invoice period returned by the tool.
+- For now, every new transaction this assistant creates is an expense. Always use a negative amount_cents for create_transaction, even if the user writes the value as positive.
+- Do not create income transactions yet. If the user asks to register income, explain briefly that this flow is currently expense-only.
 - Negative amounts = expense, positive = income in Organizze
 - When a receipt is extracted, present a clear summary before confirming
 
@@ -140,6 +148,14 @@ def _telegram_html(text: str) -> str:
     return formatted
 
 
+def _log_json(label: str, payload: dict, max_chars: int = 2000) -> None:
+    try:
+        rendered = json.dumps(payload, ensure_ascii=False, default=str)
+    except TypeError:
+        rendered = str(payload)
+    logger.info("%s: %s", label, rendered[:max_chars])
+
+
 async def send_message(update: Update, text: str) -> None:
     await update.message.reply_text(_telegram_html(text), parse_mode=ParseMode.HTML)
 
@@ -183,6 +199,10 @@ def _format_pending_transaction(params: dict) -> str:
         lines.append(f"- Categoria ID: {params['category_id']}")
     if params.get("notes"):
         lines.append(f"- Observações: {params['notes']}")
+    if params.get("tags"):
+        tag_names = ", ".join(tag["name"] for tag in _normalize_tags(params["tags"]))
+        if tag_names:
+            lines.append(f"- Tags: {tag_names}")
     lines.append("")
     lines.append("Toque em Confirmar para salvar ou Cancelar para descartar.")
     return "\n".join(lines)
@@ -251,7 +271,7 @@ def _get_account_name(account_id: int) -> str:
 
 
 def _transaction_write_params(params: dict) -> dict:
-    allowed = {"description", "amount_cents", "date", "account_id", "category_id", "notes", "paid"}
+    allowed = {"description", "amount_cents", "date", "account_id", "category_id", "notes", "tags", "paid"}
     return {key: value for key, value in params.items() if key in allowed}
 
 
@@ -270,6 +290,27 @@ def _looks_like_delete_as_create(params: dict) -> bool:
     return any(word in normalized for word in delete_words)
 
 
+def _normalize_tags(tags) -> list[dict]:
+    if not tags:
+        return []
+    if isinstance(tags, str):
+        tags = [piece.strip() for piece in tags.split(",")]
+
+    normalized = []
+    for tag in tags:
+        if isinstance(tag, str):
+            name = tag.strip()
+        elif isinstance(tag, dict):
+            name = str(tag.get("name") or "").strip()
+        else:
+            name = ""
+
+        if name:
+            normalized.append({"name": name})
+
+    return normalized
+
+
 def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[str]]:
     normalized = dict(params)
     errors = []
@@ -283,7 +324,7 @@ def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[st
     normalized["description"] = description
 
     try:
-        normalized["amount_cents"] = int(normalized["amount_cents"])
+        normalized["amount_cents"] = -abs(int(normalized["amount_cents"]))
     except (KeyError, TypeError, ValueError):
         errors.append("valor")
 
@@ -310,6 +351,11 @@ def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[st
             normalized["category_id"] = int(normalized["category_id"])
         except (TypeError, ValueError):
             errors.append("categoria")
+
+    if normalized.get("tags"):
+        normalized["tags"] = _normalize_tags(normalized["tags"])
+    else:
+        normalized.pop("tags", None)
 
     if errors:
         return None, errors
@@ -434,6 +480,14 @@ def call_tool(tool: str, params: dict) -> str:
             return json.dumps(accounts)
         elif tool == "get_transactions":
             return json.dumps(org.get_transactions(**params))
+        elif tool == "get_credit_cards":
+            return json.dumps(org.get_credit_cards())
+        elif tool == "get_credit_card_invoices":
+            return json.dumps(org.get_credit_card_invoices(**params))
+        elif tool == "get_credit_card_invoice":
+            return json.dumps(org.get_credit_card_invoice(**params))
+        elif tool == "get_credit_card_monthly_expense":
+            return json.dumps(org.get_credit_card_monthly_expense(**params))
         elif tool == "create_transaction":
             return json.dumps({"error": "create_transaction must be confirmed through a pending action"})
         elif tool == "delete_transaction":
@@ -479,6 +533,7 @@ def extract_receipt(image_bytes: bytes) -> dict:
 
 def ask_llm(user_id: int, user_message: str) -> str:
     """Send message to LLM, handle tool calls, return final text response."""
+    logger.info("Incoming user message user_id=%s text=%r", user_id, user_message)
     storage.append_message(user_id, "user", user_message)
 
     pending_response = handle_pending_confirmation(user_id, user_message)
@@ -513,6 +568,16 @@ def ask_llm(user_id: int, user_message: str) -> str:
         tool = parsed.get("tool")
         message = parsed.get("message", "")
         params = parsed.get("params", {})
+        _log_json(
+            "LLM decision",
+            {
+                "intent": parsed.get("intent"),
+                "tool": tool,
+                "params": params,
+                "message_preview": message[:300],
+                "confidence": parsed.get("confidence"),
+            },
+        )
 
         if tool:
             if tool == "create_transaction":
@@ -548,7 +613,12 @@ def ask_llm(user_id: int, user_message: str) -> str:
                 return reply
 
             tool_result = call_tool(tool, params)
-            logger.info(f"Tool {tool} called, result: {tool_result[:200]}")
+            logger.info(
+                "Tool completed tool=%s params=%s result_preview=%s",
+                tool,
+                json.dumps(params, ensure_ascii=False, default=str),
+                tool_result[:1000],
+            )
             trimmed.append({"role": "assistant", "content": raw})
             trimmed.append({"role": "user", "content": f"[Tool result for {tool}]: {tool_result}"})
             storage.append_message(user_id, "assistant", raw)

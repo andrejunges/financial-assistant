@@ -9,19 +9,53 @@ import {
   Toast,
 } from "@raycast/api";
 import { useEffect, useMemo, useState } from "react";
-import { CreatedTransaction, formatBrl, runCli, Suggestion } from "./utils";
+import {
+  CreatedTransaction,
+  formatBrl,
+  FundingSource,
+  runCli,
+  Suggestion,
+} from "./utils";
 
 type FormValues = {
   entry: string;
   suggestion: string;
+  fundingSource: string;
+  tags: string;
+  date: Date | null;
 };
 
 export default function Command() {
   const [entry, setEntry] = useState("");
+  const [fundingSources, setFundingSources] = useState<FundingSource[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState("");
+  const [selectedFundingSource, setSelectedFundingSource] = useState("");
+  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    async function loadAccounts() {
+      setIsLoading(true);
+      setError(undefined);
+      try {
+        const nextSources = await runCli<FundingSource[]>(["funding-sources"]);
+        setFundingSources(nextSources);
+        const defaultSource =
+          nextSources.find((source) => source.default) ?? nextSources[0];
+        if (defaultSource) {
+          setSelectedFundingSource(defaultSource.value);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadAccounts();
+  }, []);
 
   useEffect(() => {
     const trimmed = entry.trim();
@@ -69,6 +103,12 @@ export default function Command() {
     }
   }, [selectedSuggestion]);
 
+  const selectedSource = useMemo(
+    () =>
+      fundingSources.find((source) => source.value === selectedFundingSource),
+    [fundingSources, selectedFundingSource],
+  );
+
   async function submit(values: FormValues) {
     const payload =
       selected ??
@@ -83,9 +123,43 @@ export default function Command() {
       return;
     }
 
+    const sourceValue = values.fundingSource || selectedFundingSource;
+    const source =
+      fundingSources.find((candidate) => candidate.value === sourceValue) ??
+      selectedSource;
+    if (!source) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "No account or card selected",
+      });
+      return;
+    }
+
+    const tags = (values.tags ?? "")
+      .split(",")
+      .map((tag) => tag.trim().replace(/^#/, ""))
+      .filter(Boolean);
+    const date = values.date ?? selectedDate ?? new Date();
+    const finalPayload = {
+      ...payload,
+      amount_cents: -Math.abs(payload.amount_cents),
+      account_id: source.id,
+      account_name: source.name,
+      credit_card_id: source.kind === "credit_card" ? source.id : undefined,
+      source_kind: source.kind,
+      date: toDateString(date),
+      tags,
+    };
+
     const confirmed = await confirmAlert({
       title: "Create expense?",
-      message: `${payload.description} · ${formatBrl(payload.amount_cents)} · ${payload.account_name}`,
+      message: [
+        `${finalPayload.description} · ${formatBrl(finalPayload.amount_cents)} · ${finalPayload.account_name}`,
+        finalPayload.date,
+        tags.length ? `Tags: ${tags.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
       primaryAction: {
         title: "Create",
       },
@@ -102,7 +176,7 @@ export default function Command() {
       const created = await runCli<CreatedTransaction>([
         "create",
         "--payload",
-        JSON.stringify(payload),
+        JSON.stringify(finalPayload),
       ]);
       toast.style = Toast.Style.Success;
       toast.title = "Expense created";
@@ -153,12 +227,54 @@ export default function Command() {
           />
         ))}
       </Form.Dropdown>
+      <Form.Dropdown
+        id="fundingSource"
+        title="Account or Card"
+        value={selectedFundingSource}
+        onChange={setSelectedFundingSource}
+        error={error}
+      >
+        {fundingSources.map((source) => (
+          <Form.Dropdown.Item
+            key={source.value}
+            value={source.value}
+            title={source.name}
+            icon={
+              source.default
+                ? Icon.Star
+                : source.kind === "credit_card"
+                  ? Icon.CreditCard
+                  : Icon.Coins
+            }
+            keywords={[source.kind === "credit_card" ? "cartão" : "conta"]}
+          />
+        ))}
+      </Form.Dropdown>
+      <Form.DatePicker
+        id="date"
+        title="Date"
+        type={Form.DatePicker.Type.Date}
+        value={selectedDate}
+        onChange={setSelectedDate}
+      />
+      <Form.TextField
+        id="tags"
+        title="Tags"
+        placeholder="trabalho, reembolso"
+      />
       {selected ? (
         <Form.Description
           title="Will Create"
-          text={`${selected.description}\n${formatBrl(selected.amount_cents)} · ${selected.account_name} · ${selected.date}`}
+          text={`${selected.description}\n${formatBrl(selected.amount_cents)} · ${selectedSource?.name ?? selected.account_name} · ${toDateString(selectedDate ?? new Date())}`}
         />
       ) : null}
     </Form>
   );
+}
+
+function toDateString(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }

@@ -66,6 +66,82 @@ def fetch_and_cache_accounts() -> list[dict]:
     return accounts
 
 
+def list_accounts() -> list[dict]:
+    storage.init_db()
+    accounts = fetch_and_cache_accounts()
+    default_id = resolve_account_id()
+    return [
+        {
+            "id": int(account["id"]),
+            "name": account["name"],
+            "default": default_id is not None and int(account["id"]) == int(default_id),
+        }
+        for account in accounts
+    ]
+
+
+def list_funding_sources() -> list[dict]:
+    storage.init_db()
+    accounts = fetch_and_cache_accounts()
+    credit_cards = org.get_credit_cards()
+    default_name = normalize(default_account_name())
+
+    sources = [
+        {
+            "id": int(account["id"]),
+            "kind": "account",
+            "value": f"account:{int(account['id'])}",
+            "name": account["name"],
+            "default": False,
+        }
+        for account in accounts
+        if not account.get("archived")
+    ]
+    sources.extend(
+        {
+            "id": int(card["id"]),
+            "kind": "credit_card",
+            "value": f"credit_card:{int(card['id'])}",
+            "name": card["name"],
+            "default": False,
+        }
+        for card in credit_cards
+        if not card.get("archived")
+    )
+
+    default_source = next(
+        (
+            source for source in sources
+            if source["kind"] == "credit_card" and default_name in normalize(source["name"])
+        ),
+        None,
+    )
+    if default_source is None:
+        default_source = next(
+            (
+                source for source in sources
+                if source["kind"] == "credit_card" and "btg" in normalize(source["name"])
+            ),
+            None,
+        )
+    if default_source is None:
+        default_source = next(
+            (
+                source for source in sources
+                if default_name in normalize(source["name"])
+            ),
+            None,
+        )
+
+    if default_source is None and sources:
+        default_source = sources[0]
+
+    if default_source is not None:
+        default_source["default"] = True
+
+    return sources
+
+
 def resolve_account_id(name: Optional[str] = None) -> Optional[int]:
     name = name or default_account_name()
     cached_id = storage.get_account_id_by_name(name)
@@ -183,7 +259,7 @@ def create_from_payload(payload: dict) -> dict:
     storage.init_db()
     description = payload["description"].strip()
     input_description = payload.get("input_description", "").strip()
-    amount_cents = int(payload["amount_cents"])
+    amount_cents = -abs(int(payload["amount_cents"]))
     account_id = int(payload["account_id"])
     category_id = payload.get("category_id")
 
@@ -194,6 +270,8 @@ def create_from_payload(payload: dict) -> dict:
         account_id=account_id,
         category_id=int(category_id) if category_id else None,
         notes=payload.get("notes"),
+        tags=payload.get("tags"),
+        credit_card_id=int(payload["credit_card_id"]) if payload.get("credit_card_id") else None,
     )
 
     tx_template = {
@@ -222,6 +300,9 @@ def main() -> int:
     create_parser = subparsers.add_parser("create")
     create_parser.add_argument("--payload", required=True)
 
+    subparsers.add_parser("accounts")
+    subparsers.add_parser("funding-sources")
+
     refresh_parser = subparsers.add_parser("refresh-templates")
     refresh_parser.add_argument("--days", type=int, default=180)
 
@@ -234,6 +315,14 @@ def main() -> int:
     if args.command == "create":
         payload = json.loads(args.payload)
         print(json.dumps(create_from_payload(payload), ensure_ascii=False))
+        return 0
+
+    if args.command == "accounts":
+        print(json.dumps(list_accounts(), ensure_ascii=False))
+        return 0
+
+    if args.command == "funding-sources":
+        print(json.dumps(list_funding_sources(), ensure_ascii=False))
         return 0
 
     if args.command == "refresh-templates":

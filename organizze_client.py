@@ -8,6 +8,7 @@ Auth: HTTP Basic (email:api_token)
 import os
 import requests
 import time
+import unicodedata
 from datetime import date, timedelta
 from typing import Optional
 
@@ -52,6 +53,32 @@ def _cached(key: str, fetcher):
     _cache[key] = {"created_at": now, "value": value}
     return value
 
+def _normalize_text(text: str) -> str:
+    without_accents = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", text.lower())
+        if not unicodedata.combining(char)
+    )
+    return " ".join(without_accents.strip().split())
+
+def _normalize_tags(tags) -> list[dict]:
+    if isinstance(tags, str):
+        tags = [piece.strip() for piece in tags.split(",")]
+
+    normalized = []
+    for tag in tags:
+        if isinstance(tag, str):
+            name = tag.strip()
+        elif isinstance(tag, dict):
+            name = str(tag.get("name") or "").strip()
+        else:
+            name = ""
+
+        if name:
+            normalized.append({"name": name})
+
+    return normalized
+
 # ── Accounts ────────────────────────────────────────────────────────────────
 
 def get_accounts() -> list:
@@ -71,6 +98,176 @@ def get_accounts() -> list:
         }
         for a in accounts
     ]
+
+# ── Credit cards ─────────────────────────────────────────────────────────────
+
+def get_credit_cards() -> list:
+    """Return all credit cards."""
+    cards = _cached("credit_cards", lambda: _get("/credit_cards"))
+    return [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "description": c.get("description") or "",
+            "card_network": c.get("card_network") or "",
+            "closing_day": c.get("closing_day"),
+            "due_day": c.get("due_day"),
+            "limit_brl": (c.get("limit_cents") or 0) / 100,
+            "limit_cents": c.get("limit_cents") or 0,
+            "archived": c.get("archived", False),
+            "default": c.get("default", False),
+            "type": c.get("type") or c.get("kind", "credit_card"),
+        }
+        for c in cards
+    ]
+
+def _resolve_credit_card_id(
+    credit_card_id: Optional[int] = None,
+    credit_card_name: Optional[str] = None,
+) -> Optional[int]:
+    if credit_card_id:
+        return int(credit_card_id)
+
+    if not credit_card_name:
+        return None
+
+    normalized = _normalize_text(credit_card_name)
+    for card in get_credit_cards():
+        card_name = _normalize_text(card["name"])
+        if card_name == normalized or normalized in card_name or card_name in normalized:
+            return int(card["id"])
+
+    return None
+
+def get_credit_card_invoices(
+    credit_card_id: Optional[int] = None,
+    credit_card_name: Optional[str] = None,
+) -> list:
+    """Return invoices for a credit card."""
+    resolved_id = _resolve_credit_card_id(credit_card_id, credit_card_name)
+    if resolved_id is None:
+        raise ValueError("credit_card_id or credit_card_name is required")
+
+    invoices = _get(f"/credit_cards/{resolved_id}/invoices")
+    return [
+        {
+            "id": i["id"],
+            "date": i["date"],
+            "starting_date": i["starting_date"],
+            "closing_date": i["closing_date"],
+            "amount_brl": i.get("amount_cents", 0) / 100,
+            "amount_cents": i.get("amount_cents", 0),
+            "payment_amount_brl": i.get("payment_amount_cents", 0) / 100,
+            "payment_amount_cents": i.get("payment_amount_cents", 0),
+            "balance_brl": i.get("balance_cents", 0) / 100,
+            "balance_cents": i.get("balance_cents", 0),
+            "previous_balance_brl": i.get("previous_balance_cents", 0) / 100,
+            "previous_balance_cents": i.get("previous_balance_cents", 0),
+            "credit_card_id": i.get("credit_card_id"),
+        }
+        for i in invoices
+    ]
+
+def _format_invoice_transaction(t: dict, categories_by_id: dict) -> dict:
+    return {
+        "id": t["id"],
+        "description": t["description"],
+        "amount_brl": t["amount_cents"] / 100,
+        "amount_cents": t["amount_cents"],
+        "date": t["date"],
+        "category_id": t.get("category_id"),
+        "category": categories_by_id.get(t.get("category_id"), ""),
+        "credit_card_id": t.get("credit_card_id"),
+        "credit_card_invoice_id": t.get("credit_card_invoice_id"),
+        "installment": t.get("installment"),
+        "total_installments": t.get("total_installments"),
+        "notes": t.get("notes") or "",
+        "paid": t.get("paid", False),
+    }
+
+def get_credit_card_invoice(
+    credit_card_id: Optional[int] = None,
+    invoice_id: Optional[int] = None,
+    credit_card_name: Optional[str] = None,
+) -> dict:
+    """Return one credit-card invoice with its transactions."""
+    resolved_id = _resolve_credit_card_id(credit_card_id, credit_card_name)
+    if resolved_id is None:
+        raise ValueError("credit_card_id or credit_card_name is required")
+    if not invoice_id:
+        raise ValueError("invoice_id is required")
+
+    invoice = _get(f"/credit_cards/{resolved_id}/invoices/{int(invoice_id)}")
+    categories_by_id = {c["id"]: c["name"] for c in get_categories()}
+    transactions = [
+        _format_invoice_transaction(t, categories_by_id)
+        for t in invoice.get("transactions", [])
+    ]
+    return {
+        "id": invoice["id"],
+        "date": invoice["date"],
+        "starting_date": invoice["starting_date"],
+        "closing_date": invoice["closing_date"],
+        "amount_brl": invoice.get("amount_cents", 0) / 100,
+        "amount_cents": invoice.get("amount_cents", 0),
+        "payment_amount_brl": invoice.get("payment_amount_cents", 0) / 100,
+        "payment_amount_cents": invoice.get("payment_amount_cents", 0),
+        "balance_brl": invoice.get("balance_cents", 0) / 100,
+        "balance_cents": invoice.get("balance_cents", 0),
+        "previous_balance_brl": invoice.get("previous_balance_cents", 0) / 100,
+        "previous_balance_cents": invoice.get("previous_balance_cents", 0),
+        "credit_card_id": invoice.get("credit_card_id"),
+        "transactions": transactions,
+    }
+
+def get_credit_card_monthly_expense(
+    credit_card_id: Optional[int] = None,
+    credit_card_name: Optional[str] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    include_transactions: bool = True,
+) -> dict:
+    """Return the invoice spend for a credit card month.
+
+    When year/month are omitted, this selects the invoice period containing today.
+    If no invoice period contains today, it falls back to the next invoice due date.
+    """
+    today = date.today()
+    target_year = int(year) if year else today.year
+    target_month = int(month) if month else today.month
+    invoices = get_credit_card_invoices(credit_card_id, credit_card_name)
+
+    selected = None
+    if year or month:
+        for invoice in invoices:
+            invoice_date = date.fromisoformat(invoice["date"])
+            if invoice_date.year == target_year and invoice_date.month == target_month:
+                selected = invoice
+                break
+    else:
+        for invoice in invoices:
+            starts = date.fromisoformat(invoice["starting_date"])
+            closes = date.fromisoformat(invoice["closing_date"])
+            if starts <= today <= closes:
+                selected = invoice
+                break
+        if selected is None:
+            future_invoices = [
+                invoice for invoice in invoices
+                if date.fromisoformat(invoice["date"]) >= today
+            ]
+            selected = future_invoices[0] if future_invoices else invoices[-1]
+
+    if selected is None:
+        raise ValueError(f"No invoice found for {target_year}-{target_month:02d}")
+
+    if not include_transactions:
+        return selected
+
+    return get_credit_card_invoice(
+        credit_card_id=selected["credit_card_id"],
+        invoice_id=selected["id"],
+    )
 
 # ── Transactions ─────────────────────────────────────────────────────────────
 
@@ -97,6 +294,7 @@ def get_transactions(days: int = 30, account_id: Optional[int] = None) -> list:
             "account_id": t.get("account_id"),
             "account": accounts_by_id.get(t.get("account_id"), ""),
             "notes": t.get("notes", ""),
+            "tags": t.get("tags", []),
             "paid": t.get("paid", True),
         }
         for t in txs
@@ -109,6 +307,8 @@ def create_transaction(
     account_id: int,
     category_id: Optional[int] = None,
     notes: Optional[str] = None,
+    tags: Optional[list] = None,
+    credit_card_id: Optional[int] = None,
     paid: bool = True,
 ) -> dict:
     """
@@ -127,6 +327,10 @@ def create_transaction(
         payload["category_id"] = category_id
     if notes:
         payload["notes"] = notes
+    if tags:
+        payload["tags"] = _normalize_tags(tags)
+    if credit_card_id:
+        payload["credit_card_id"] = credit_card_id
 
     result = _post("/transactions", payload)
     return {
@@ -135,7 +339,11 @@ def create_transaction(
         "amount_brl": result["amount_cents"] / 100,
         "date": result["date"],
         "account": result.get("account_name", ""),
+        "account_id": result.get("account_id"),
+        "account_type": result.get("account_type"),
         "category": result.get("category_name", ""),
+        "credit_card_id": result.get("credit_card_id"),
+        "tags": result.get("tags", []),
     }
 
 def delete_transaction(

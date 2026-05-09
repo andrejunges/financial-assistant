@@ -20,6 +20,14 @@ export type Suggestion = {
   score: number;
 };
 
+export type FundingSource = {
+  id: number;
+  kind: "account" | "credit_card";
+  value: string;
+  name: string;
+  default: boolean;
+};
+
 export type CreatedTransaction = {
   id: number;
   description: string;
