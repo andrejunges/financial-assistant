@@ -110,6 +110,11 @@ OPENAI_VISION_MODEL=gpt-4o
 HISTORY_DB_PATH=financial_assistant.sqlite3
 ```
 
+**Change the default account used when a new transaction omits the account**:
+```bash
+DEFAULT_ACCOUNT_NAME=BTG
+```
+
 **Change the reference data cache TTL**:
 ```bash
 REFERENCE_CACHE_TTL_SECONDS=300
@@ -145,5 +150,6 @@ Always set `ALLOWED_USER_IDS` to your Telegram ID. Otherwise anyone who finds yo
 - Tool loop capped at 5 iterations.
 - SQLite-backed conversation history and pending actions.
 - App-owned confirm-before-write flow for financial mutations.
+- Default account for omitted transaction accounts, configurable with `DEFAULT_ACCOUNT_NAME`.
 - Short TTL cache for accounts and categories.
 - Configurable OpenAI chat and vision models.

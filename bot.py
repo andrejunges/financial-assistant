@@ -29,6 +29,7 @@ REQUIRED_ENV_VARS = (
 
 CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o")
+DEFAULT_ACCOUNT_NAME = os.environ.get("DEFAULT_ACCOUNT_NAME", "BTG")
 openai_client = None
 
 
@@ -66,6 +67,7 @@ Rules:
 - Be concise and friendly
 - When listing transactions, format nicely with clear income/expense labels
 - For emphasis, use Telegram HTML tags like <b>bold</b> and <i>italic</i>. Do not use Markdown emphasis like **bold**.
+- If the user omits the account for a new transaction, use the default account unless the user corrects it later.
 - Negative amounts = expense, positive = income in Organizze
 - When a receipt is extracted, present a clear summary before confirming
 
@@ -186,6 +188,10 @@ def _resolve_account_id(value) -> Optional[int]:
     return None
 
 
+def _default_account_id() -> Optional[int]:
+    return _resolve_account_id(DEFAULT_ACCOUNT_NAME)
+
+
 def _get_account_name(account_id: int) -> str:
     cached_name = storage.get_account_name(account_id)
     if cached_name:
@@ -217,6 +223,9 @@ def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[st
         errors.append("valor")
 
     account_id = _resolve_account_id(normalized.get("account_id"))
+    if account_id is None and not normalized.get("account_id"):
+        account_id = _default_account_id()
+
     if account_id is None:
         errors.append("conta")
     else:
