@@ -20,6 +20,16 @@
       "mode": "no-view"
     }
   ],
+  "preferences": [
+    {
+      "name": "repoPath",
+      "title": "Repository Path",
+      "description": "Absolute path to the financial-assistant repository containing finance_cli.py.",
+      "type": "textfield",
+      "required": true,
+      "default": "/Users/andrejunges/code/jb/financial-assistant"
+    }
+  ],
   "dependencies": {
     "@raycast/api": "^1.89.0"
   },

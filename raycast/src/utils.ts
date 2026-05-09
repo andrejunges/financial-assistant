@@ -1,8 +1,13 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { getPreferenceValues } from "@raycast/api";
 
 const execFileAsync = promisify(execFile);
+
+type Preferences = {
+  repoPath: string;
+};
 
 export type Suggestion = {
   description: string;
@@ -25,7 +30,8 @@ export type CreatedTransaction = {
 };
 
 function cliPath() {
-  return path.resolve(process.cwd(), "..", "finance_cli.py");
+  const preferences = getPreferenceValues<Preferences>();
+  return path.join(preferences.repoPath, "finance_cli.py");
 }
 
 export function formatBrl(amountCents: number) {
@@ -39,6 +45,7 @@ export function formatBrl(amountCents: number) {
 
 export async function runCli<T>(args: string[]) {
   const { stdout } = await execFileAsync("python3", [cliPath(), ...args], {
+    cwd: getPreferenceValues<Preferences>().repoPath,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
   });
