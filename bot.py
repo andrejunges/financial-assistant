@@ -8,9 +8,9 @@ import unicodedata
 from io import BytesIO
 from datetime import date, datetime
 from typing import Optional
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 import organizze_client as org
 import storage
@@ -104,6 +104,8 @@ Rules:
 # Short explicit replies accepted while a pending action is waiting.
 AFFIRMATIVE_CONFIRMATIONS = {"sim", "s", "yes", "y", "confirmo", "confirma", "pode criar", "pode lancar", "ok"}
 NEGATIVE_CONFIRMATIONS = {"nao", "n", "no", "cancelar", "cancela", "deixa", "nao lanca"}
+CONFIRM_CALLBACK = "pending:confirm"
+CANCEL_CALLBACK = "pending:cancel"
 
 
 def _normalize_reply(text: str) -> str:
@@ -140,6 +142,25 @@ async def send_message(update: Update, text: str) -> None:
     await update.message.reply_text(_telegram_html(text), parse_mode=ParseMode.HTML)
 
 
+def confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Confirmar", callback_data=CONFIRM_CALLBACK),
+                InlineKeyboardButton("Cancelar", callback_data=CANCEL_CALLBACK),
+            ]
+        ]
+    )
+
+
+async def send_pending_message(update: Update, text: str) -> None:
+    await update.message.reply_text(
+        _telegram_html(text),
+        parse_mode=ParseMode.HTML,
+        reply_markup=confirmation_keyboard(),
+    )
+
+
 def _format_brl(amount_cents: int) -> str:
     amount = abs(amount_cents) / 100
     prefix = "-" if amount_cents < 0 else "+"
@@ -161,7 +182,7 @@ def _format_pending_transaction(params: dict) -> str:
     if params.get("notes"):
         lines.append(f"- Observações: {params['notes']}")
     lines.append("")
-    lines.append("Responda `sim` para confirmar ou `cancelar` para descartar.")
+    lines.append("Toque em Confirmar para salvar ou Cancelar para descartar.")
     return "\n".join(lines)
 
 
@@ -252,6 +273,50 @@ def _normalize_transaction_params(params: dict) -> tuple[Optional[dict], list[st
     return normalized, []
 
 
+def confirm_pending_action(user_id: int) -> str:
+    pending = storage.get_pending_action(user_id)
+    if not pending:
+        message = "Não encontrei nenhum lançamento pendente para confirmar."
+        storage.append_message(user_id, "assistant", message)
+        return message
+
+    if pending["action_type"] != "create_transaction":
+        storage.resolve_pending_action(pending["id"], "cancelled")
+        message = "Não reconheci essa ação pendente, então descartei por segurança."
+        storage.append_message(user_id, "assistant", message)
+        return message
+
+    try:
+        result = org.create_transaction(**_transaction_write_params(pending["params"]))
+        storage.resolve_pending_action(pending["id"], "confirmed")
+        message = (
+            "Lançamento criado:\n"
+            f"- {result['description']}\n"
+            f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
+            f"- Data: {result['date']}\n"
+            f"- Conta: {_get_account_name(int(pending['params']['account_id'])) or 'não informada'}"
+        )
+    except Exception as e:
+        logger.error(f"Pending action error: {e}")
+        message = f"Não consegui criar o lançamento: {e}"
+
+    storage.append_message(user_id, "assistant", message)
+    return message
+
+
+def cancel_pending_action(user_id: int) -> str:
+    pending = storage.get_pending_action(user_id)
+    if not pending:
+        message = "Não encontrei nenhum lançamento pendente para cancelar."
+        storage.append_message(user_id, "assistant", message)
+        return message
+
+    storage.resolve_pending_action(pending["id"], "cancelled")
+    message = "Tudo bem, descartei esse lançamento."
+    storage.append_message(user_id, "assistant", message)
+    return message
+
+
 def handle_pending_confirmation(user_id: int, user_message: str) -> Optional[str]:
     pending = storage.get_pending_action(user_id)
     if not pending:
@@ -259,38 +324,14 @@ def handle_pending_confirmation(user_id: int, user_message: str) -> Optional[str
 
     normalized = _normalize_reply(user_message)
     if normalized in NEGATIVE_CONFIRMATIONS:
-        storage.resolve_pending_action(pending["id"], "cancelled")
-        message = "Tudo bem, descartei esse lançamento."
-        storage.append_message(user_id, "assistant", message)
-        return message
+        return cancel_pending_action(user_id)
 
     if normalized in AFFIRMATIVE_CONFIRMATIONS:
-        if pending["action_type"] != "create_transaction":
-            storage.resolve_pending_action(pending["id"], "cancelled")
-            message = "Não reconheci essa ação pendente, então descartei por segurança."
-            storage.append_message(user_id, "assistant", message)
-            return message
-
-        try:
-            result = org.create_transaction(**_transaction_write_params(pending["params"]))
-            storage.resolve_pending_action(pending["id"], "confirmed")
-            message = (
-                "Lançamento criado:\n"
-                f"- {result['description']}\n"
-                f"- {_format_brl(int(result['amount_brl'] * 100))}\n"
-                f"- Data: {result['date']}\n"
-                f"- Conta: {_get_account_name(int(pending['params']['account_id'])) or 'não informada'}"
-            )
-        except Exception as e:
-            logger.error(f"Pending action error: {e}")
-            message = f"Não consegui criar o lançamento: {e}"
-
-        storage.append_message(user_id, "assistant", message)
-        return message
+        return confirm_pending_action(user_id)
 
     message = (
         "Tenho um lançamento aguardando confirmação. "
-        "Responda `sim` para salvar ou `cancelar` para descartar antes de começarmos outro."
+        "Use os botões da mensagem anterior, ou responda `sim` para salvar ou `cancelar` para descartar."
     )
     storage.append_message(user_id, "assistant", message)
     return message
@@ -432,7 +473,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {e}")
         reply = f"❌ Erro interno: {e}"
 
-    await send_message(update, reply)
+    if storage.get_pending_action(user_id):
+        await send_pending_message(update, reply)
+    else:
+        await send_message(update, reply)
+
+
+async def handle_pending_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+
+    if not is_authorized(user_id):
+        await query.message.reply_text(_telegram_html("Acesso não autorizado."), parse_mode=ParseMode.HTML)
+        return
+
+    if query.data == CONFIRM_CALLBACK:
+        storage.append_message(user_id, "user", "[Botão: Confirmar lançamento]")
+        reply = confirm_pending_action(user_id)
+    elif query.data == CANCEL_CALLBACK:
+        storage.append_message(user_id, "user", "[Botão: Cancelar lançamento]")
+        reply = cancel_pending_action(user_id)
+    else:
+        reply = "Não reconheci essa ação."
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning(f"Could not remove confirmation keyboard: {e}")
+
+    await query.message.reply_text(_telegram_html(reply), parse_mode=ParseMode.HTML)
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -510,7 +580,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Photo error: {e}")
         reply = f"❌ Erro ao processar a imagem: {e}"
 
-    await send_message(update, reply)
+    if storage.get_pending_action(user_id):
+        await send_pending_message(update, reply)
+    else:
+        await send_message(update, reply)
 
 def main():
     validate_required_env()
@@ -519,6 +592,7 @@ def main():
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CallbackQueryHandler(handle_pending_callback, pattern=r"^pending:(confirm|cancel)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     logger.info("Bot started with receipt support!")

@@ -17,7 +17,7 @@ Say things like *"gastei 45 reais no mercado hoje"* and it drafts the transactio
 | "como estão meus orçamentos?" | Shows budget vs actual this month |
 | receipt photo | Extracts receipt details and asks before saving |
 
-Transactions are never written immediately from an LLM response. The app stores a pending action and only calls Organizze after an explicit confirmation like `sim`.
+Transactions are never written immediately from an LLM response. The app stores a pending action and only calls Organizze after an explicit confirmation, either through the Telegram buttons or a typed `sim`.
 
 ---
 
