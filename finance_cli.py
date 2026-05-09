@@ -142,6 +142,10 @@ def list_funding_sources() -> list[dict]:
     return sources
 
 
+def list_tags(days: int, include_credit_cards: bool) -> list[dict]:
+    return org.get_tags(days=days, include_credit_cards=include_credit_cards)
+
+
 def resolve_account_id(name: Optional[str] = None) -> Optional[int]:
     name = name or default_account_name()
     cached_id = storage.get_account_id_by_name(name)
@@ -303,6 +307,10 @@ def main() -> int:
     subparsers.add_parser("accounts")
     subparsers.add_parser("funding-sources")
 
+    tags_parser = subparsers.add_parser("tags")
+    tags_parser.add_argument("--days", type=int, default=365)
+    tags_parser.add_argument("--no-credit-cards", action="store_true")
+
     refresh_parser = subparsers.add_parser("refresh-templates")
     refresh_parser.add_argument("--days", type=int, default=180)
 
@@ -323,6 +331,10 @@ def main() -> int:
 
     if args.command == "funding-sources":
         print(json.dumps(list_funding_sources(), ensure_ascii=False))
+        return 0
+
+    if args.command == "tags":
+        print(json.dumps(list_tags(args.days, not args.no_credit_cards), ensure_ascii=False))
         return 0
 
     if args.command == "refresh-templates":

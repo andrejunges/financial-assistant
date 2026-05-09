@@ -62,6 +62,9 @@ def _normalize_text(text: str) -> str:
     return " ".join(without_accents.strip().split())
 
 def _normalize_tags(tags) -> list[dict]:
+    if not tags:
+        return []
+
     if isinstance(tags, str):
         tags = [piece.strip() for piece in tags.split(",")]
 
@@ -78,6 +81,41 @@ def _normalize_tags(tags) -> list[dict]:
             normalized.append({"name": name})
 
     return normalized
+
+def _tag_names(tags) -> list[str]:
+    return [tag["name"] for tag in _normalize_tags(tags)]
+
+def _collect_tags(
+    summary: dict,
+    tags,
+    *,
+    date_text: Optional[str],
+    source: str,
+    transaction_id: Optional[int],
+) -> None:
+    for name in _tag_names(tags):
+        normalized = _normalize_text(name)
+        entry = summary.setdefault(
+            normalized,
+            {
+                "name": name,
+                "normalized_name": normalized,
+                "use_count": 0,
+                "last_used_at": None,
+                "sources": [],
+            },
+        )
+        entry["use_count"] += 1
+        if date_text and (entry["last_used_at"] is None or date_text > entry["last_used_at"]):
+            entry["last_used_at"] = date_text
+        if len(entry["sources"]) < 5:
+            entry["sources"].append(
+                {
+                    "source": source,
+                    "transaction_id": transaction_id,
+                    "date": date_text,
+                }
+            )
 
 # ── Accounts ────────────────────────────────────────────────────────────────
 
@@ -182,6 +220,7 @@ def _format_invoice_transaction(t: dict, categories_by_id: dict) -> dict:
         "installment": t.get("installment"),
         "total_installments": t.get("total_installments"),
         "notes": t.get("notes") or "",
+        "tags": t.get("tags", []),
         "paid": t.get("paid", False),
     }
 
@@ -267,6 +306,51 @@ def get_credit_card_monthly_expense(
     return get_credit_card_invoice(
         credit_card_id=selected["credit_card_id"],
         invoice_id=selected["id"],
+    )
+
+def get_tags(days: int = 365, include_credit_cards: bool = True) -> list:
+    """Return tags observed in recent transactions and credit-card invoices.
+
+    Organizze does not expose a standalone tags endpoint in the public v2 API,
+    so this derives the existing tag list from transactions that already use tags.
+    """
+    start = date.today() - timedelta(days=days)
+    summary = {}
+
+    for tx in get_transactions(days=days):
+        _collect_tags(
+            summary,
+            tx.get("tags"),
+            date_text=tx.get("date"),
+            source="transaction",
+            transaction_id=tx.get("id"),
+        )
+
+    if include_credit_cards:
+        for card in get_credit_cards():
+            if card.get("archived"):
+                continue
+            for invoice in get_credit_card_invoices(credit_card_id=int(card["id"])):
+                closes = date.fromisoformat(invoice["closing_date"])
+                starts = date.fromisoformat(invoice["starting_date"])
+                if closes < start or starts > date.today():
+                    continue
+                invoice_detail = get_credit_card_invoice(
+                    credit_card_id=int(card["id"]),
+                    invoice_id=int(invoice["id"]),
+                )
+                for tx in invoice_detail.get("transactions", []):
+                    _collect_tags(
+                        summary,
+                        tx.get("tags"),
+                        date_text=tx.get("date"),
+                        source=f"credit_card:{card['name']}",
+                        transaction_id=tx.get("id"),
+                    )
+
+    return sorted(
+        summary.values(),
+        key=lambda tag: (-tag["use_count"], tag["name"].lower()),
     )
 
 # ── Transactions ─────────────────────────────────────────────────────────────

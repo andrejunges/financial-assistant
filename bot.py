@@ -62,6 +62,7 @@ Available tools:
 - create_transaction: Add an expense transaction only (required: description, amount_cents as a negative integer, date YYYY-MM-DD, account_id; optional: category_id, notes, tags as an array of strings or objects with name)
 - delete_transaction: Delete an existing transaction (required: transaction_id; optional: update_future, update_all)
 - get_categories: List all categories
+- get_tags: List tags observed in recent transactions and credit-card invoices (optional: days=365, include_credit_cards=true)
 - get_budgets: List current month budgets and usage
 
 Rules:
@@ -494,6 +495,8 @@ def call_tool(tool: str, params: dict) -> str:
             return json.dumps({"error": "delete_transaction must be confirmed through a pending action"})
         elif tool == "get_categories":
             return json.dumps(org.get_categories())
+        elif tool == "get_tags":
+            return json.dumps(org.get_tags(**params))
         elif tool == "get_budgets":
             return json.dumps(org.get_budgets())
         else:
