@@ -155,12 +155,84 @@ The Raycast extension calls `finance_cli.py`, which reads `.env` directly. It us
 
 ---
 
+## Claude / MCP connector
+
+This repo also includes a read-only MCP server so Claude can inspect the same Organizze data used by the Telegram bot.
+
+Run it locally:
+```bash
+# Requires Python 3.10+ because the official MCP SDK requires it.
+pip install -r requirements.txt
+python3 mcp_server.py
+```
+
+The MCP endpoint is:
+```txt
+http://localhost:8000/mcp
+```
+
+When running locally, the server binds to `127.0.0.1` by default. In Railway,
+the `PORT` variable is present, so it binds to `0.0.0.0` for public HTTPS
+routing. You can override this with `MCP_HOST`.
+
+Available read-only tools:
+
+- `health_check`
+- `get_accounts`
+- `get_transactions`
+- `get_credit_cards`
+- `get_credit_card_invoices`
+- `get_credit_card_invoice`
+- `get_credit_card_monthly_expense`
+- `get_categories`
+- `get_tags`
+- `get_budgets`
+
+For a public deployment, set:
+```bash
+MCP_AUTH_TOKEN=your-long-random-token
+```
+
+Then configure the MCP client to send:
+```txt
+Authorization: Bearer your-long-random-token
+```
+
+In Railway, create a second service inside the same project and point it at this
+same GitHub repo/branch. Configure it as a Web service with this start command:
+```bash
+python mcp_server.py
+```
+
+Only these variables are required for the MCP service:
+
+- `ORGANIZZE_EMAIL`
+- `ORGANIZZE_API_TOKEN`
+- `MCP_AUTH_TOKEN`
+
+The Telegram bot variables are not needed by the MCP service. Once Railway
+deploys it, connect Claude to:
+
+```txt
+https://<your-mcp-service>.up.railway.app/mcp
+```
+
+You can also point the service at `Procfile.mcp`:
+```txt
+web: python mcp_server.py
+```
+
+The MCP server intentionally starts read-only. Financial writes should follow the same project rule as Telegram: prepare a pending action first, then confirm before calling Organizze.
+
+---
+
 ## Project structure
 
 ```
 organizze_bot/
 ├── bot.py                 # Telegram bot + LLM loop
 ├── finance_cli.py         # Local CLI for Raycast quick entry
+├── mcp_server.py          # Claude/MCP read-only connector
 ├── organizze_client.py    # Organizze API wrapper
 ├── raycast/               # Raycast extension
 ├── storage.py             # SQLite history + pending actions
@@ -175,6 +247,8 @@ organizze_bot/
 
 ## Security note
 Always set `ALLOWED_USER_IDS` to your Telegram ID. Otherwise anyone who finds your bot can read and write your financial data.
+
+For the MCP server, set `MCP_AUTH_TOKEN` before exposing it publicly. Without it, anyone who can reach the endpoint can read your Organizze data.
 
 ## Current architecture
 

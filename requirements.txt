@@ -2,3 +2,4 @@ python-telegram-bot==21.6
 openai==1.51.0
 requests==2.32.3
 httpx<0.28
+mcp[cli]==1.27.0
