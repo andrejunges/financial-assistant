@@ -377,6 +377,8 @@ def get_transactions(days: int = 30, account_id: Optional[int] = None) -> list:
             "category": categories_by_id.get(t.get("category_id"), ""),
             "account_id": t.get("account_id"),
             "account": accounts_by_id.get(t.get("account_id"), ""),
+            "credit_card_id": t.get("credit_card_id"),
+            "credit_card_invoice_id": t.get("credit_card_invoice_id"),
             "notes": t.get("notes", ""),
             "tags": t.get("tags", []),
             "paid": t.get("paid", True),

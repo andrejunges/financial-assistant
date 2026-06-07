@@ -35,7 +35,37 @@ def _category_name(transaction: dict) -> str:
 
 
 def _source_name(transaction: dict, fallback: str) -> str:
-    return transaction.get("account") or transaction.get("credit_card") or fallback
+    return transaction.get("credit_card") or transaction.get("account") or fallback
+
+
+def _transaction_id(transaction: dict) -> int | None:
+    value = transaction.get("id")
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_credit_card_transaction(transaction: dict) -> bool:
+    return bool(transaction.get("credit_card_id") or transaction.get("credit_card_invoice_id"))
+
+
+def _dedupe_transactions(transactions: list[dict]) -> list[dict]:
+    deduped = []
+    seen_ids = set()
+
+    for tx in transactions:
+        tx_id = _transaction_id(tx)
+        if tx_id is not None:
+            if tx_id in seen_ids:
+                continue
+            seen_ids.add(tx_id)
+        deduped.append(tx)
+
+    return deduped
 
 
 def _top_items(transactions: list[dict], limit: int = 5) -> list[dict]:
@@ -79,10 +109,11 @@ def _fetch_credit_card_transactions(start: date, end: date) -> list[dict]:
             for tx in invoice_detail.get("transactions", []):
                 if not _within_period(tx, start, end):
                     continue
-                key = (int(card["id"]), int(tx["id"]))
-                if key in seen:
-                    continue
-                seen.add(key)
+                key = _transaction_id(tx)
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
                 transactions.append({**tx, "credit_card": card["name"]})
 
     return transactions
@@ -120,11 +151,20 @@ def build_period_summary(days: int = 7, today: date | None = None) -> str:
 
     account_transactions = _fetch_account_transactions(days, start, end)
     card_transactions = _fetch_credit_card_transactions(start, end)
+    card_transaction_ids = {
+        tx_id for tx_id in (_transaction_id(tx) for tx in card_transactions) if tx_id is not None
+    }
 
-    account_expenses = [tx for tx in account_transactions if _amount_cents(tx) < 0]
-    account_income = [tx for tx in account_transactions if _amount_cents(tx) > 0]
+    account_only_transactions = [
+        tx
+        for tx in account_transactions
+        if not _is_credit_card_transaction(tx) and _transaction_id(tx) not in card_transaction_ids
+    ]
+
+    account_expenses = [tx for tx in account_only_transactions if _amount_cents(tx) < 0]
+    account_income = [tx for tx in account_only_transactions if _amount_cents(tx) > 0]
     card_expenses = [tx for tx in card_transactions if _amount_cents(tx) != 0]
-    all_expenses = account_expenses + card_expenses
+    all_expenses = _dedupe_transactions(card_expenses + account_expenses)
 
     account_expense_total = sum(abs(_amount_cents(tx)) for tx in account_expenses)
     card_expense_total = sum(abs(_amount_cents(tx)) for tx in card_expenses)
