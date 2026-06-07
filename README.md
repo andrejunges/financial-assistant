@@ -16,6 +16,8 @@ Say things like *"gastei 45 reais no mercado hoje"* and it drafts the transactio
 | "remover lançamento duplicado" | Finds/drafts a deletion and asks for confirmation |
 | "quais categorias tenho?" | Lists all categories |
 | "como estão meus orçamentos?" | Shows budget vs actual this month |
+| "/resumo" | Sends a 7-day financial summary |
+| "/resumo 30" | Sends a summary for the last 30 days |
 | receipt photo | Extracts receipt details and asks before saving |
 
 Transactions are never created or deleted immediately from an LLM response. The app stores a pending action and only calls Organizze after an explicit confirmation, either through the Telegram buttons or a typed `sim`.
@@ -120,6 +122,20 @@ DEFAULT_ACCOUNT_NAME=BTG
 ```bash
 REFERENCE_CACHE_TTL_SECONDS=300
 ```
+
+**Enable the automatic weekly Telegram summary**:
+```bash
+WEEKLY_SUMMARY_ENABLED=true
+WEEKLY_SUMMARY_DAY=monday
+WEEKLY_SUMMARY_TIME=08:00
+WEEKLY_SUMMARY_TIMEZONE=America/Sao_Paulo
+WEEKLY_SUMMARY_LOOKBACK_DAYS=7
+TELEGRAM_SUMMARY_CHAT_ID=123456789
+```
+
+If `TELEGRAM_SUMMARY_CHAT_ID` is omitted, the bot uses the first ID in
+`ALLOWED_USER_IDS`. In a private Telegram chat, the chat ID is usually the same
+as your user ID.
 
 **Add more tools** in `organizze_client.py` and list them in `SYSTEM_PROMPT`.
 

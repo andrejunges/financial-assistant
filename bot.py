@@ -5,13 +5,16 @@ import base64
 import html
 import re
 import unicodedata
+import asyncio
 from io import BytesIO
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
+from financial_summary import build_period_summary
 import organizze_client as org
 import storage
 
@@ -30,6 +33,7 @@ REQUIRED_ENV_VARS = (
 CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o")
 DEFAULT_ACCOUNT_NAME = os.environ.get("DEFAULT_ACCOUNT_NAME", "BTG")
+WEEKLY_SUMMARY_TASK_KEY = "weekly_summary_task"
 openai_client = None
 
 
@@ -117,6 +121,97 @@ AFFIRMATIVE_CONFIRMATIONS = {"sim", "s", "yes", "y", "confirmo", "confirma", "po
 NEGATIVE_CONFIRMATIONS = {"nao", "n", "no", "cancelar", "cancela", "deixa", "nao lanca"}
 CONFIRM_CALLBACK = "pending:confirm"
 CANCEL_CALLBACK = "pending:cancel"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+def _summary_chat_id() -> Optional[int]:
+    explicit = os.environ.get("TELEGRAM_SUMMARY_CHAT_ID")
+    if explicit:
+        return int(explicit.strip())
+
+    allowed_ids = os.environ.get("ALLOWED_USER_IDS", "")
+    first_allowed = next((item.strip() for item in allowed_ids.split(",") if item.strip()), None)
+    if first_allowed:
+        return int(first_allowed)
+
+    return None
+
+
+def _weekly_summary_days() -> int:
+    return max(1, min(int(os.environ.get("WEEKLY_SUMMARY_LOOKBACK_DAYS", "7")), 90))
+
+
+def _summary_timezone() -> ZoneInfo:
+    name = os.environ.get("WEEKLY_SUMMARY_TIMEZONE", "America/Sao_Paulo")
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown WEEKLY_SUMMARY_TIMEZONE=%s. Falling back to UTC.", name)
+        return ZoneInfo("UTC")
+
+
+def _summary_weekday() -> int:
+    value = os.environ.get("WEEKLY_SUMMARY_DAY", "monday").strip().lower()
+    weekdays = {
+        "0": 0,
+        "monday": 0,
+        "segunda": 0,
+        "segunda-feira": 0,
+        "1": 1,
+        "tuesday": 1,
+        "terca": 1,
+        "terça": 1,
+        "terca-feira": 1,
+        "terça-feira": 1,
+        "2": 2,
+        "wednesday": 2,
+        "quarta": 2,
+        "quarta-feira": 2,
+        "3": 3,
+        "thursday": 3,
+        "quinta": 3,
+        "quinta-feira": 3,
+        "4": 4,
+        "friday": 4,
+        "sexta": 4,
+        "sexta-feira": 4,
+        "5": 5,
+        "saturday": 5,
+        "sabado": 5,
+        "sábado": 5,
+        "6": 6,
+        "sunday": 6,
+        "domingo": 6,
+    }
+    return weekdays.get(value, 0)
+
+
+def _summary_time() -> time:
+    value = os.environ.get("WEEKLY_SUMMARY_TIME", "08:00").strip()
+    try:
+        hour, minute = value.split(":", 1)
+        return time(hour=int(hour), minute=int(minute), tzinfo=_summary_timezone())
+    except ValueError:
+        logger.warning("Invalid WEEKLY_SUMMARY_TIME=%s. Falling back to 08:00.", value)
+        return time(hour=8, minute=0, tzinfo=_summary_timezone())
+
+
+def _next_weekly_summary_at(now: Optional[datetime] = None) -> datetime:
+    tz = _summary_timezone()
+    now = now.astimezone(tz) if now else datetime.now(tz)
+    target_time = _summary_time()
+    days_until = (_summary_weekday() - now.weekday()) % 7
+    candidate_date = now.date() + timedelta(days=days_until)
+    candidate = datetime.combine(candidate_date, target_time).astimezone(tz)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate
 
 
 def _normalize_reply(text: str) -> str:
@@ -706,11 +801,40 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Exemplos:\n"
         "- qual meu saldo?\n"
         "- gastos dos últimos 7 dias\n"
+        "- /resumo\n"
+        "- /resumo 30\n"
         "- gastei R$ 45 no mercado hoje, conta Nubank\n"
         "- quais categorias tenho?\n"
         "- como estão meus orçamentos?\n\n"
         "Para lançamentos, eu monto um rascunho e só salvo depois que você responder `sim`."
     )
+
+
+async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await send_message(update, "Acesso não autorizado.")
+        return
+
+    await update.message.chat.send_action("typing")
+
+    days = _weekly_summary_days()
+    if context.args:
+        try:
+            days = max(1, min(int(context.args[0]), 90))
+        except ValueError:
+            await send_message(update, "Use /resumo ou /resumo 30.")
+            return
+
+    try:
+        reply = build_period_summary(days=days)
+    except Exception as e:
+        logger.error("Summary error: %s", e)
+        reply = f"Não consegui gerar o resumo agora: {e}"
+
+    storage.append_message(user_id, "user", f"[Comando: /resumo {days}]")
+    storage.append_message(user_id, "assistant", reply)
+    await send_message(update, reply)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle receipt photos — extract data via vision then confirm with user."""
@@ -765,17 +889,76 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await send_message(update, reply)
 
+
+async def weekly_summary_loop(app, chat_id: int):
+    while True:
+        next_run = _next_weekly_summary_at()
+        delay = max(1, (next_run - datetime.now(next_run.tzinfo)).total_seconds())
+        logger.info("Next weekly summary scheduled for %s", next_run.isoformat())
+        await asyncio.sleep(delay)
+
+        try:
+            days = _weekly_summary_days()
+            message = build_period_summary(days=days)
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=_telegram_html(message),
+                parse_mode=ParseMode.HTML,
+            )
+            storage.append_message(chat_id, "assistant", f"[Resumo semanal automático]\n{message}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Scheduled weekly summary error: %s", e)
+
+
+async def start_weekly_summary(app):
+    if not _env_flag("WEEKLY_SUMMARY_ENABLED"):
+        return
+
+    chat_id = _summary_chat_id()
+    if chat_id is None:
+        logger.warning(
+            "WEEKLY_SUMMARY_ENABLED is true but TELEGRAM_SUMMARY_CHAT_ID/ALLOWED_USER_IDS is missing."
+        )
+        return
+
+    app.bot_data[WEEKLY_SUMMARY_TASK_KEY] = asyncio.create_task(
+        weekly_summary_loop(app, chat_id),
+        name="weekly-summary",
+    )
+
+
+async def stop_weekly_summary(app):
+    task = app.bot_data.get(WEEKLY_SUMMARY_TASK_KEY)
+    if task is None:
+        return
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
 def main():
     validate_required_env()
     storage.init_db()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    app = ApplicationBuilder().token(token).build()
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(start_weekly_summary)
+        .post_shutdown(stop_weekly_summary)
+        .build()
+    )
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CommandHandler("resumo", handle_summary))
+    app.add_handler(CommandHandler("resumosemanal", handle_summary))
     app.add_handler(CallbackQueryHandler(handle_pending_callback, pattern=r"^pending:(confirm|cancel)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    logger.info("Bot started with receipt support!")
+    logger.info("Bot started with receipt and summary support!")
     app.run_polling()
 
 if __name__ == "__main__":
